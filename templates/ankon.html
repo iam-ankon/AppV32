@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.2/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+      integrity="sha384-EVSTQN3/azprG1Anm3QDgpJLIm9Nao0Yz1ztcQTwFspd3yD65VohhpuuCOmLASjC"
+      crossorigin="anonymous"
+    />
+    <script
+      src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"
+      crossorigin="anonymous"
+    ></script>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+</head>
+<style>
+    .container {
+        min-height: 100vh;
+        height: 80vh;
+        margin: auto;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+    }
+    .form-switch .form-check-input {
+        width: 6rem !important;
+    }
+    .form-check-input {
+        height: 3em !important;
+    }
+    .container .video {
+        height: 60vh;
+        width: auto;
+    }
+</style>
+<body>
+    <div class="container">
+        <div class="form-check form-switch mb-4">
+            <input
+                class="form-check-input"
+                type="checkbox"
+                id="flexSwitchCheckDefault"
+                onchange="toggleDetection(this.checked)"
+            />
+        </div>
+        <video
+            id="inputVideo"
+            width="1980"
+            height="1200"
+            autoplay
+            class="d-none"
+        ></video>
+        <canvas
+            id="outputCanvas"
+            width="1980"
+            height="1200"
+            class="video border border-info rounded"
+        ></canvas>
+
+        <div class="d-flex justify-content-center mt-4 px-4">
+            <button
+                id="startButton"
+                onclick="startDetection()"
+                class="btn btn-info btn-lg me-1 px-4"
+            >
+                Start
+            </button>
+            <button
+                id="stopButton"
+                onclick="stopDetection()"
+                class="btn btn-danger btn-lg ms-1 px-4"
+            >
+                Stop
+            </button>
+        </div>
+
+        <!-- This will display the detected posture -->
+        <div class="card mt-4">
+            <div class="card-body">
+                <h1>Detected Posture: <span id="dynamic-string">Waiting for posture...</span></h1>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        $(document).ready(function () {
+            // Poll the Flask back-end every second to fetch the detected posture
+            setInterval(function () {
+                $.ajax({
+                    url: "/get_landmarks",
+                    type: "GET",
+                    success: function (response) {
+                        console.log("Response from server:", response.string);  // Debug line
+                        $("#dynamic-string").text(response.string);
+                    },
+                    error: function (xhr, status, error) {
+                        console.error("Error fetching posture:", status, error);  // Debug line
+                        $("#dynamic-string").text("Error fetching posture.");
+                    }
+                });
+            }, 1000);  // Poll every 1 second
+        });
+
+        const pose = new Pose({
+            locateFile: (file) => {
+                return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
+            },
+        });
+
+        pose.setOptions({
+            modelComplexity: 1,
+            smoothLandmarks: true,
+            enableSegmentation: true,
+            smoothSegmentation: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5,
+        });
+
+        let isDetectionRunning = false;
+        let videoElement;
+        let canvasElement;
+        let canvasCtx;
+        let camera;
+
+        function sendLandmarksToServer(landmarks) {
+            fetch("/send_landmarks", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ landmarks: landmarks }),
+            }).catch((error) => {
+                console.error("Error sending landmarks data:", error);
+            });
+        }
+
+        function onResults(results) {
+            canvasElement = document.getElementById("outputCanvas");
+            canvasCtx = canvasElement.getContext("2d");
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.drawImage(
+                results.image,
+                0,
+                0,
+                canvasElement.width,
+                canvasElement.height
+            );
+
+            if (results.poseLandmarks) {
+                if (isDetectionRunning) {
+                    sendLandmarksToServer(results.poseLandmarks);
+                }
+
+                drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {
+                    color: "#00FF00",
+                    lineWidth: 5,
+                });
+                drawLandmarks(canvasCtx, results.poseLandmarks, {
+                    color: "#FF0000",
+                    lineWidth: 2,
+                });
+            }
+            canvasCtx.restore();
+        }
+
+        function startCamera() {
+            videoElement = document.getElementById("inputVideo");
+            navigator.mediaDevices.getUserMedia({ video: true }).then((stream) => {
+                videoElement.srcObject = stream;
+                camera = new Camera(videoElement, {
+                    onFrame: async () => {
+                        await pose.send({ image: videoElement });
+                    },
+                    width: 1980,
+                    height: 1200,
+                });
+                camera.start();
+            });
+        }
+
+        function stopCamera() {
+            videoElement.srcObject.getTracks().forEach((track) => {
+                track.stop();
+            });
+            pose.close();
+            camera.stop();
+        }
+
+        function startDetection() {
+            if (!isDetectionRunning) {
+                isDetectionRunning = true;
+            }
+        }
+
+        function stopDetection() {
+            if (isDetectionRunning) {
+                isDetectionRunning = false;
+            }
+        }
+
+        function toggleDetection(checked) {
+            if (checked) {
+                startCamera();
+            } else {
+                stopCamera();
+            }
+        }
+
+        pose.onResults(onResults);
+    </script>
+</body>
+</html>
